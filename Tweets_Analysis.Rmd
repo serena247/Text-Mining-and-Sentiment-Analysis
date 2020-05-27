@@ -1,0 +1,363 @@
+---
+title: "Tweets_Analysis"
+date: "4/12/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+install.packages(c("ggplot2", "e1071", "caret", "quanteda", "irlba", 
+                   "randomForest", "dplyr", "arm", "tm", "topicmodels",
+                   "tidyr", "readr", "stringr", "gridExtra",
+                   "scales", "lubridate", "ggrepel", "reshape2", 
+                   "tidytext", "broom", "kableExtra", "data.table", 
+                   "treemap"))
+```
+
+```{r}
+library(ggplot2)
+library(e1071)
+library(caret)
+library(quanteda)
+library(irlba)
+library(randomForest)
+library(dplyr)
+library(arm)
+library(tm)
+library(topicmodels)
+library(stringr)
+library(gridExtra)
+library(scales)
+library(lubridate)
+library(ggrepel)
+library(reshape2)
+library(tidytext)
+library(kableExtra)
+library(data.table)
+library(treemap)
+```
+
+```{r}
+tweets <- read.csv("tweets.csv")
+```
+
+```{r}
+#Data Preparation and EDA
+
+tweets <- tweets[-c(8,9,14:28)]
+
+tweets <- rename(tweets, retweet = is_retweet)
+tweets <- rename(tweets, in_reply_to = in_reply_to_screen_name)
+tweets <- rename(tweets, quote_tweet = is_quote_status)
+tweets <- rename(tweets, language = lang)
+tweets <- rename(tweets, author = original_author)
+
+tweets$handle <- sub("realDonaldTrump", "Trump", tweets$handle)
+tweets$handle <- sub("HillaryClinton", "Clinton", tweets$handle)
+tweets$author <- ifelse(tweets$author != "", tweets$author, tweets$handle)
+
+tweets$time <- as.Date(tweets$time)
+tweets$retweet <- as.logical(tweets$retweet)
+tweets$quote_tweet <- as.logical(tweets$quote_tweet)
+tweets$text <- as.character(tweets$text)
+tweets$author <- as.character(tweets$author)
+tweets$in_reply_to <- as.character(tweets$in_reply_to)
+
+tweets$text <- str_replace_all(tweets$text, "[\n]", "")
+tweets$text <- str_replace_all(tweets$text, "&amp", "")
+tweets$text <- str_replace_all(tweets$text, "http.*", "")
+tweets$text <- iconv(tweets$text, "latin1", "ASCII", sub = "")
+
+summary(tweets)
+```
+
+```{r}
+#Distribution of Tweet Lengths
+
+trump_tweets <- tweets %>% filter(handle == "Trump")
+clinton_tweets <- tweets %>% filter(handle == "Clinton")
+
+trump_tweets$TextLength <- nchar(trump_tweets$text)
+clinton_tweets$TextLength <- nchar(clinton_tweets$text)
+
+ggplot(trump_tweets, aes(x = TextLength)) +
+  geom_histogram(binwidth = 5, fill = "#FF0000") + 
+  labs(y = "Number of Tweets", x = "Length of Tweet",
+       title = "Distribution of Tweet Lengths Posted by Trump")
+
+ggplot(clinton_tweets, aes(x = TextLength)) +
+  geom_histogram(binwidth = 5, fill = "#0000FF") + 
+  labs(y = "Number of Tweets", x = "Length of Tweet",
+       title = "Distribution of Tweet Lengths Posted by Clinton")
+```
+
+```{r}
+tweets <- tweets %>% rename(doc_id = id)
+ClintonTweets <- tweets %>% filter(retweet == "FALSE", handle == "Clinton")
+TrumpTweets <- tweets %>% filter(retweet == "FALSE", handle == "Trump")
+
+TrumpCorpus <- DataframeSource(TrumpTweets)
+TrumpCorpus <- VCorpus(TrumpCorpus)
+
+ClintonCorpus <- DataframeSource(ClintonTweets)
+ClintonCorpus <- VCorpus(ClintonCorpus)
+```
+
+```{r}
+TrumpCorpus <- tm_map(TrumpCorpus, content_transformer(tolower))
+TrumpCorpus <- tm_map(TrumpCorpus, removeNumbers)
+TrumpCorpus <- tm_map(TrumpCorpus, removeWords, tidytext::stop_words$word)
+TrumpCorpus <- tm_map(TrumpCorpus, removePunctuation)
+TrumpCorpus <- tm_map(TrumpCorpus, stripWhitespace)
+TrumpTidy <- tidy(TrumpCorpus)
+
+ClintonCorpus <- tm_map(ClintonCorpus, content_transformer(tolower))
+ClintonCorpus <- tm_map(ClintonCorpus, removeNumbers)
+ClintonCorpus <- tm_map(ClintonCorpus, removeWords, tidytext::stop_words$word)
+ClintonCorpus <- tm_map(ClintonCorpus, removePunctuation)
+ClintonCorpus <- tm_map(ClintonCorpus, stripWhitespace)
+ClintonTidy <- tidy(ClintonCorpus)
+
+TrumpCorpus_NoNames <- tm_map(TrumpCorpus, removeWords, c("donald", "trump", "hillary", "clinton", "realdonaldtrump", "hillaryclinton"))
+TrumpTidy_NoNames <- tidy(TrumpCorpus_NoNames)
+ClintonCorpus_NoNames <- tm_map(ClintonCorpus, removeWords, c("donald", "trump", "hillary", "clinton", "realdonaldtrump", "hillaryclinton"))
+ClintonTidy_NoNames <- tidy(ClintonCorpus_NoNames)
+
+CreateTermsMatrix <- function(x) {
+        x <- TermDocumentMatrix(x)
+        x <- as.matrix(x)
+        y <- rowSums(x)
+        y <- sort(y, decreasing=TRUE)
+        return(y) }
+
+TrumpFrequentTerms <- CreateTermsMatrix(TrumpCorpus)
+ClintonFrequentTerms <- CreateTermsMatrix(ClintonCorpus)
+TrumpFrequentTerms_NoNames <- CreateTermsMatrix(TrumpCorpus_NoNames)
+ClintonFrequentTerms_NoNames <- CreateTermsMatrix(ClintonCorpus_NoNames)
+```
+
+```{r}
+#Trump and Clinton Top 25 Used Words Including Their Names
+
+TrumpTerms <- data.frame(word = names(TrumpFrequentTerms), count = TrumpFrequentTerms)
+ClintonTerms <- data.frame(word = names(ClintonFrequentTerms), count = ClintonFrequentTerms)
+
+TrumpTerms <- TrumpTerms[1:25,]
+ClintonTerms <- ClintonTerms[1:25,]
+
+treemap(TrumpTerms, index = "word", vSize = "count", vColor = "count", palette = "Reds", title = "Trump Top 25 Used Terms")
+treemap(ClintonTerms, index = "word", vSize = "count", vColor = "count", palette = "Blues", title = "Clinton Top 25 Used Terms")
+```
+
+```{r}
+#Trump and Clinton Top 25 Used Words Excluding Their Names
+
+TrumpTerms_NoNames <- data.frame(word = names(TrumpFrequentTerms_NoNames), count = TrumpFrequentTerms_NoNames)
+ClintonTerms_NoNames <- data.frame(word = names(ClintonFrequentTerms_NoNames), count = ClintonFrequentTerms_NoNames)
+
+TrumpTerms_NoNames <- TrumpTerms_NoNames[1:25,]
+ClintonTerms_NoNames <- ClintonTerms_NoNames[1:25,]
+
+ggplot(TrumpTerms_NoNames, aes(x = (reorder(word, count)), y = count)) + 
+  geom_bar(stat = "identity", fill = "#FF0000") +
+  theme(legend.position = "none") +
+  coord_flip() +
+  labs(x = "", y = "Times Used", title = "Top 25 Words Used by Trump (Excluding Names)")
+
+ggplot(ClintonTerms_NoNames, aes(x = (reorder(word, count)), y = count)) + 
+  geom_bar(stat = "identity", fill = "#0000FF") +
+  theme(legend.position = "none") +
+  coord_flip() +
+  labs(x = "", y = "Times Used", title = "Top 25 Words Used by Clinton (Excluding Names)")
+```
+
+```{r}
+#Bigrams of Text Used in Tweets
+
+Bigrams <- function(tibble, topN = 20) {
+  x <- tibble %>% unnest_tokens(bigram, text, token = "ngrams", n = 2)
+  y <- x %>% count(bigram, sort = TRUE) %>% 
+    top_n(topN, wt = n)
+  }
+
+trump1 <- Bigrams(TrumpTidy)
+trump2 <- Bigrams(TrumpTidy_NoNames)
+clinton1 <- Bigrams(ClintonTidy)
+clinton2 <- Bigrams(ClintonTidy_NoNames)
+
+trump1 <- trump1 %>% filter(bigram != "NA")
+trump2 <- trump2 %>% filter(bigram != "NA")
+clinton1 <- clinton1 %>% filter(bigram != "NA")
+clinton2 <- clinton2 %>% filter(bigram != "NA")
+
+trump1 <- trump1[1:15,]
+trump2 <- trump2[1:15,]
+clinton1 <- clinton1[1:15,]
+clinton2 <- clinton2[1:15,]
+
+ggplot(trump1, aes(x = reorder(bigram, n), y = n)) + 
+  geom_bar(stat = "identity", fill = "#FF0000") + 
+  coord_flip() + 
+  theme(legend.position = "none") + 
+  labs(x = "", y = "", title = "Trump Top 15 Topics Including Names") +
+  geom_text(aes(label = n, y = n + 5), vjust = 0.5)
+
+ggplot(trump2, aes(x = reorder(bigram, n), y = n)) + 
+  geom_bar(stat = "identity", fill = "#FF0000") + 
+  coord_flip() + 
+  theme(legend.position = "none") + 
+  labs(x = "", y = "", title = "Trump Top 15 Topics Excluding Names") +
+  geom_text(aes(label = n, y = n + 2), vjust = 0.5)
+
+ggplot(clinton1, aes(x = reorder(bigram, n), y = n)) + 
+  geom_bar(stat = "identity", fill = "#0000FF") + 
+  coord_flip() + 
+  theme(legend.position = "none") + 
+  labs(x = "", y = "", title = "Clinton Top 15 Topics Including Names") +
+  geom_text(aes(label = n, y = n + 7), vjust = 0.5)
+
+ggplot(clinton2, aes(x = reorder(bigram, n), y = n)) + 
+  geom_bar(stat = "identity", fill = "#0000FF") + 
+  coord_flip() + 
+  theme(legend.position = "none") + 
+  labs(x = "", y = "", title = "Clinton Top 15 Topics Excluding Names") +
+  geom_text(aes(label = n, y = n + 1), vjust = 0.5)
+
+comparison1 <- ggplot(trump2, aes(x = reorder(bigram, n), y = n)) + 
+  geom_bar(stat = "identity", fill = "#FF0000") + 
+  coord_flip() + 
+  theme(legend.position = "none") + 
+  labs(x = "", y = "", title = "Donald Trump") +
+  geom_text(aes(label = n, y = n + 6), vjust = 0.5)
+
+comparison2 <- ggplot(clinton2, aes(x = reorder(bigram, n), y = n)) + 
+  geom_bar(stat = "identity", fill = "#0000FF") + 
+  coord_flip() + 
+  theme(legend.position = "none") + 
+  labs(x = "", y = "", title = "Hillary Clinton") +
+  geom_text(aes(label = n, y = n + 2), vjust = 0.5)
+  
+grid.arrange(comparison1, comparison2, nrow = 1)
+```
+
+```{r, out.width = "100%", fig.height = 7}
+#Sentiment Analysis
+
+NoNamesTidy <- bind_rows(trump = TrumpTidy_NoNames, clinton = ClintonTidy_NoNames, .id = "candidate")
+Words <- NoNamesTidy %>% unnest_tokens(word, text)
+
+Bing <- Words %>% inner_join(get_sentiments("bing"), by = "word")
+
+trump_sentiment <- Bing %>% filter(candidate == "trump") %>% 
+  count(word, sentiment, sort = TRUE) %>% 
+  group_by(sentiment) %>% arrange(desc(n)) %>% 
+  slice(1:15) %>% ggplot(aes(x = reorder(word, n), y = n)) + 
+  geom_col(aes(fill = sentiment), show.legend = FALSE) + 
+  coord_flip() + facet_wrap(~sentiment, scales = "free_y") + 
+  labs(x = "", y = "Number of Times Used", 
+       title = "Donald Trump's Top 15 Sentimental Words Used") + 
+  scale_fill_manual(values = c("positive" = "#228B22", "negative" = "red")) +
+  geom_text(aes(label = n, y = n + 5), vjust = 0.5)
+
+clinton_sentiment <- Bing %>% filter(candidate == "clinton") %>% 
+  count(word, sentiment, sort = TRUE) %>% 
+  group_by(sentiment) %>% arrange(desc(n)) %>% 
+  slice(1:15) %>% ggplot(aes(x = reorder(word, n), y = n)) + 
+  geom_col(aes(fill = sentiment), show.legend = FALSE) + 
+  coord_flip() + facet_wrap(~sentiment, scales = "free_y") + 
+  labs(x = "", y = "Number of Times Used", 
+       title = "Hillary Clinton's Top 15 Sentimental Words Used") + 
+  scale_fill_manual(values = c("positive" = "#228B22", "negative" = "red")) + 
+  geom_text(aes(label = n, y = n + 2), vjust = 0.5)
+
+grid.arrange(trump_sentiment, clinton_sentiment)
+```
+
+```{r, warning = FALSE}
+#What are the retweet and favorite counts of Tweets where Trump and Clinton used Positive and Negative sentimental words?
+
+Trump_Sentiment <- Bing %>% filter(candidate == "trump") 
+TrumpGoodWords <- Trump_Sentiment %>% filter(sentiment == "positive")
+TrumpBadWords <- Trump_Sentiment %>% filter(sentiment == "negative")
+
+Hillary_Sentiment <- Bing %>% filter(candidate == "clinton")
+HillaryGoodWords <- Hillary_Sentiment %>% filter(sentiment == "positive")
+HillaryBadWords <- Hillary_Sentiment %>% filter(sentiment == "negative")
+
+TrumpGoodTweets <- tweets %>% filter(handle == "Trump", str_detect(text, TrumpGoodWords$word))
+TrumpBadTweets <- tweets %>% filter(handle == "Trump", str_detect(text, TrumpBadWords$word))
+ClintonGoodTweets <- tweets %>% filter(handle == "Clinton", str_detect(text, HillaryGoodWords$word))
+ClintonBadTweets <- tweets %>% filter(handle == "Clinton", str_detect(text, HillaryBadWords$word))
+
+TrumpGoodTweets <- TrumpGoodTweets %>%
+  summarise(MaxRetweets = max(retweet_count), MinRetweets = min(retweet_count), AverageRetweets = mean(retweet_count), 
+            MaxFavorites = max(favorite_count), MinFavorites = min(favorite_count), AverageFavorites = mean(favorite_count))
+
+TrumpBadTweets <- TrumpBadTweets %>%
+  summarise(MaxRetweets = max(retweet_count), MinRetweets = min(retweet_count), AverageRetweets = mean(retweet_count), 
+            MaxFavorites = max(favorite_count), MinFavorites = min(favorite_count), AverageFavorites = mean(favorite_count))
+
+ClintonGoodTweets <- ClintonGoodTweets %>%
+  summarise(MaxRetweets = max(retweet_count), MinRetweets = min(retweet_count), AverageRetweets = mean(retweet_count), 
+            MaxFavorites = max(favorite_count), MinFavorites = min(favorite_count), AverageFavorites = mean(favorite_count))
+
+ClintonBadTweets <- ClintonBadTweets %>%
+  summarise(MaxRetweets = max(retweet_count), MinRetweets = min(retweet_count), AverageRetweets = mean(retweet_count), 
+            MaxFavorites = max(favorite_count), MinFavorites = min(favorite_count), AverageFavorites = mean(favorite_count))
+
+
+SentimentalTweet_Performance <- data.table(
+  "Candidate" = c("Trump", "", "Clinton", ""),
+  "Words Used in Tweet" = c("Positive", "Negative", "Positive", "Negative"), 
+  "Average Retweets" = c(TrumpGoodTweets$AverageRetweets, TrumpBadTweets$AverageRetweets, ClintonGoodTweets$AverageRetweets, ClintonBadTweets$AverageRetweets),
+  "Average Favorites" = c(TrumpGoodTweets$AverageFavorites, TrumpBadTweets$AverageFavorites, ClintonGoodTweets$AverageFavorites, ClintonBadTweets$AverageFavorites))
+
+kable(SentimentalTweet_Performance, format = "html", digits = 0) %>% 
+  kable_styling() %>% 
+  column_spec(1, bold = T) %>% 
+  column_spec(2, bold = T) %>% 
+  column_spec(3, bold = F) %>% 
+  column_spec(4, bold = F)
+```
+
+```{r}
+TrumpTerms$word <- as.character(TrumpTerms$word)
+ClintonTerms$word <- as.character(ClintonTerms$word)
+
+TrumpTweetsWithWords <- tweets %>% filter(handle == "Trump", str_detect(text, TrumpTerms$word))
+ClintonTweetsWithWords <- tweets %>% filter(handle == "Clinton", str_detect(text, ClintonTerms$word))
+
+TrumpTweetsWithWords <- TrumpTweetsWithWords %>% 
+  summarise(MaxRetweets = max(retweet_count), MinRetweets = min(retweet_count), AverageRetweets = mean(retweet_count), 
+            MaxFavorites = max(favorite_count), MinFavorites = min(favorite_count), AverageFavorites = mean(favorite_count))
+
+ClintonTweetsWithWords <- ClintonTweetsWithWords %>% 
+  summarise(MaxRetweets = max(retweet_count), MinRetweets = min(retweet_count), AverageRetweets = mean(retweet_count), 
+            MaxFavorites = max(favorite_count), MinFavorites = min(favorite_count), AverageFavorites = mean(favorite_count))
+
+AllTrumpTweets <- tweets %>% filter(handle == "Trump") %>% 
+  summarise(MaxRetweets = max(retweet_count), MinRetweets = min(retweet_count), AverageRetweets = mean(retweet_count), 
+            MaxFavorites = max(favorite_count), MinFavorites = min(favorite_count), AverageFavorites = mean(favorite_count))
+
+AllClintonTweets <- tweets %>% filter(handle == "Clinton") %>% 
+  summarise(MaxRetweets = max(retweet_count), MinRetweets = min(retweet_count), AverageRetweets = mean(retweet_count), 
+            MaxFavorites = max(favorite_count), MinFavorites = min(favorite_count), AverageFavorites = mean(favorite_count))
+
+TweetsWithWords_Performance <- data.table(
+  "Candidate" = c("Trump", "", "Clinton", ""),
+  "Context" = c("Tweets Including Top 25 Terms", "All Tweets by Trump", "Tweets Including Top 25 Terms", "All Tweets by Clinton"), 
+  "Average Retweets" = c(TrumpTweetsWithWords$AverageRetweets, AllTrumpTweets$AverageRetweets, 
+                         ClintonTweetsWithWords$AverageRetweets, AllClintonTweets$AverageRetweets),
+  "Average Favorites" = c(TrumpTweetsWithWords$AverageFavorites, AllTrumpTweets$AverageFavorites, 
+                          ClintonTweetsWithWords$AverageFavorites, AllClintonTweets$AverageFavorites))
+
+kable(TweetsWithWords_Performance, format = "html", digits = 0) %>% 
+  kable_styling() %>% 
+  column_spec(1, bold = T) %>% 
+  column_spec(2, bold = F) %>% 
+  column_spec(3, bold = F) %>% 
+  column_spec(4, bold = F)
+```
